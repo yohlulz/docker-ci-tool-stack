@@ -78,7 +78,7 @@ services:
    volumes:
      - /var/run/docker.sock:/var/run/docker.sock
      - /usr/bin/docker:/usr/bin/docker
-     - jenkins_data:/var/lib/jenkins
+     - jenkins_data:/var/jenkins_home
    command: echo "jenkins data"
 
 ####################################################
