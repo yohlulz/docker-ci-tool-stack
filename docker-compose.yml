@@ -1,73 +1,213 @@
 version: '2'
 
+volumes:
+  sonarqube_conf:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_bundled-plugins:
+  postgresql:
+  postgresql_data:
+  portainer_data:
+  redis_data:
+  gitlab_data:
+  jenkins_data:
+  nexus_data:
+
 networks:
-  prodnetwork:
+  prodnet:
+    driver: bridge
+  postgresnet:
+    driver: bridge
+  redisnet:
     driver: bridge
 
 services:
- nexus:
-  build: ./nexus
-  ports:
-    - "18081:8081"
-  networks:
-    - prodnetwork
+ portainer_data:
+   image: busybox
+   container_name: 'portainer_data'
+   volumes:
+     # in order to manage the local docker engine, for now works only in Linux :)
+     - '/var/run/docker.sock:/var/run/docker.sock'
+     - portainer_data:/data
 
- jenkins:
-  build: ./jenkins
-  ports:
-    - "18080:8080"
-  networks:
-    - prodnetwork
-  volumes:
-    - /var/run/docker.sock:/var/run/docker.sock
-    - /usr/local/bin/docker:/usr/bin/docker
-    - /opt/jenkins/:/var/lib/jenkins/
-  depends_on:
-    - nexus
-    - gitlab
-    - sonar
-  environment:
-    - NEXUS_PORT=8081
-    - SONAR_PORT=9000
-    - SONAR_DB_PORT=5432
+ nexus_data:
+   # same image as for server container: https://github.com/sonatype/docker-nexus/issues/31
+   build: ./nexus
+   volumes:
+     # in case mounted from host: mkdir /some/dir/nexus-data && chown -R 200 /some/dir/nexus-data
+     - nexus_data:/sonatype-work
+   command: echo "data-only container for Nexus"
+
+ sonar_data:
+   image: busybox
+   container_name: 'sonar_data'
+   restart: on-failure
+   volumes:
+     - sonarqube_conf:/opt/sonarqube/conf
+     - sonarqube_data:/opt/sonarqube/data
+     - sonarqube_extensions:/opt/sonarqube/extensions
+     - sonarqube_bundled-plugins:/opt/sonarqube/lib/bundled-plugins
+
+ postgres_data:
+   image: busybox
+   container_name: 'postgres_data'
+   restart: on-failure
+   volumes:
+     - postgresql:/var/lib/postgresql
+     # This needs explicit mapping due to https://github.com/docker-library/postgres/blob/4e48e3228a30763913ece952c611e5e9b95c8759/Dockerfile.template#L52
+     - postgresql_data:/var/lib/postgresql/data
+
+ redis_data:
+   image: busybox
+   container_name: 'redis_data'
+   restart: on-failure
+   volumes:
+     - redis_data:/data
+
+ gitlab_data:
+   image: busybox
+   container_name: 'gitlab_data'
+   restart: on-failure
+   volumes:
+     - gitlab_data:/home/git/data
+
+ jenkins_data:
+   build: ./jenkins
+   container_name: 'jenkins_data'
+   restart: on-failure
+   volumes:
+     - /var/run/docker.sock:/var/run/docker.sock
+     - /usr/bin/docker:/usr/bin/docker
+     - jenkins_data:/var/lib/jenkins
+   command: echo "jenkins data"
+
+####################################################
+
+ nexus:
+   ######################
+   ##  admin:admin123  ##
+   ######################
+   build: ./nexus
+   image: yohlulz/nexus:2.14.1
+   container_name: 'nexus_2.14.1'
+   hostname: 'nexus'
+   networks:
+     - prodnet
+   volumes_from:
+     - nexus_data
+   ports:
+     - "8081:8081"
+
+ redis:
+   # https://hub.docker.com/r/library/redis/
+   image: redis:3.2.9-alpine
+   container_name: 'redis_3.2.9'
+   hostname: 'redis'
+   ports:
+     - "6379:6379"
+   networks:
+     - redisnet
+   volumes_from:
+     - redis_data
 
  sonar:
-  build: ./sonar
-  ports:
-   - "19000:9000"
-   - "5432:5432"
-  networks:
-    - prodnetwork
-  depends_on:
-    - sonardb
-  environment:
-   - SONARQUBE_JDBC_URL=jdbc:postgresql://sonardb:5432/sonar
-   - SONARQUBE_JDBC_USERNAME=sonar
-   - SONARQUBE_JDBC_PASSWORD=sonar
- sonardb:
-  networks:
-    - prodnetwork
-  image: postgres
-  environment:
-   - POSTGRES_USER=sonar
-   - POSTGRES_PASSWORD=sonar
-  volumes:
-    - /opt/postgres/data:/var/lib/postgresql/data
+   ####################
+   ##   admin:admin  ##
+   ####################
+   # https://github.com/SonarSource/docker-sonarqube/blob/master/recipes.md
+   build: ./sonar
+   image: yohlulz/sonar:5.6.3
+   container_name: 'sonar_5.6.3'
+   hostname: 'sonar'
+   ports:
+      - "9000:9000"
+      - "5432:5432"
+   networks:
+      - postgresnet
+      - prodnet
+   environment:
+      - SONARQUBE_JDBC_URL=jdbc:postgresql://postgresdb:5432/sonar
+      - SONARQUBE_JDBC_USERNAME=db_user
+      - SONARQUBE_JDBC_PASSWORD=db_pass
+   volumes_from:
+      - sonar_data
+   depends_on:
+      - postgresdb
+
+ postgresdb:
+   # https://hub.docker.com/r/sameersbn/postgresql/
+   image: sameersbn/postgresql:9.6-2
+   container_name: 'postgres_9.6.2'
+   hostname: 'postgresdb'
+   volumes_from:
+     - postgres_data
+   networks:
+     - postgresnet
+   environment:
+     - DB_USER=db_user
+     - DB_PASS=db_pass
+     - DB_NAME=sonar,gitlab
+     - DB_EXTENSION=pg_trgm
+     - PG_TRUST_LOCALNET=true
+     - PG_PASSWORD=postgres
+
+ portainer:
+   # https://portainer.readthedocs.io/en/stable/deployment.html#persist-portainer-data
+   # https://hub.docker.com/r/portainer/portainer/
+   image: portainer/portainer:1.13.4
+   container_name: 'portainer_1.13.4'
+   networks:
+     - prodnet
+   hostname: 'portainer'
+   ports:
+     - "19000:9000"
+   volumes_from:
+     - portainer_data
 
  gitlab:
-  image: gitlab/gitlab-ce:8.14.4-ce.0
-  restart: always
-  networks:
-    - prodnetwork
-  environment:
-    GITLAB_OMNIBUS_CONFIG: |
-      # external_url 'https://gitlab.example.com'
-      # Add any other gitlab.rb configuration here, each on its own line
-  ports:
-    - "80:80"
-    - "443:443"
-    - "2222:22"
-  volumes:
-    - /opt/gitlab/config:/etc/gitlab
-    - /opt/gitlab/logs:/var/log/gitlab
-    - /opt/gitlab/data:/var/opt/gitlab
+   ######################
+   ##  root:Default1!  ##
+   ######################
+   # https://hub.docker.com/r/sameersbn/gitlab/
+   image: sameersbn/gitlab:9.3.5
+   container_name: 'gitlab_9.3.5'
+   networks:
+     - prodnet
+     - redisnet
+     - postgresnet
+   depends_on:
+     - redis
+     - postgresdb
+   hostname: 'gitlab'
+   ports:
+     - "10080:80"
+     - "10022:22"
+   volumes_from:
+     - gitlab_data
+   env_file:
+     - gitlab-variables.env
+
+ jenkins:
+   build: ./jenkins
+   image: yohlulz/jenkins:2.60.1
+   container_name: 'jenkins_2.60.1'
+   hostname: 'jenkins'
+   ports:
+     - "18080:8080"
+     - "50000:50000" # slave specific
+   volumes_from:
+     - jenkins_data
+   networks:
+     - prodnet
+   depends_on:
+     - gitlab
+     - nexus
+     - sonar
+   environment:
+     - NEXUS_PORT=8081
+     - SONAR_PORT=9000
+     - SONAR_DB_PORT=5432
+#   extra_links:
+#     - gitlab:cj-repo
+#   environment:
+#     - JAVA_OPTS=
